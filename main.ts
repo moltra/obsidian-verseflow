@@ -115,6 +115,31 @@ export default class VerseFlowPlugin extends Plugin {
     else await this.app.vault.create(path, content);
   }
 
+  // Build per-chapter verse list from the plan
+  private collectChapterVerses(plan: Array<{ ref?: string; path?: string }>, bookName: string, chapterBase: string): Array<{ num: number; ref: string }> {
+    const verses: Array<{ num: number; ref: string }> = [];
+    for (const v of plan) {
+      const p = v.path || ""; if (!p) continue;
+      const parts = p.split("#"); const src = parts[0];
+      const segs = src.split("/"); const fn = segs.pop() || ""; const book = segs.pop() || "";
+      const base = fn.replace(/\.md$/i, "");
+      if (book === bookName && base === chapterBase) {
+        const ref = v.ref || "";
+        const verseNum = Number(((ref.match(/:(\d+)/) || [])[1]));
+        if (Number.isFinite(verseNum)) verses.push({ num: verseNum, ref });
+      }
+    }
+    verses.sort((a,b) => a.num - b.num);
+    return verses;
+  }
+
+  // Build initial chapter note content including all verse stubs
+  private buildChapterNoteContent(bookName: string, chapterBase: string, verses: Array<{ num: number; ref: string }>): string {
+    const header = `---\ntitle: ${chapterBase} Notes\nbook: ${bookName}\ncreated: ${this.todayISO()}\n---\n\n# ${chapterBase} – Notes\n\n- Notes that may span multiple verses.\n\n## Per-verse\n\n`;
+    const sections = verses.map(v => `### v-${v.num} — ${v.ref}\n\n- \n\n`).join("");
+    return header + sections;
+  }
+
   getActiveEditor(): Editor | null {
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (view?.editor) return view.editor;
@@ -291,6 +316,22 @@ export default class VerseFlowPlugin extends Plugin {
     // Ensure base folder exists
     try { if (!this.app.vault.getAbstractFileByPath(notesBasePath)) await (this.app.vault as any).createFolder(notesBasePath); } catch {}
 
+    // Pre-group verses by chapter for efficiency
+    const byChapter = new Map<string, { book: string; base: string; verses: Array<{ num: number; ref: string }> }>();
+    for (const v of plan) {
+      const p = v.path || ""; if (!p) continue;
+      const src = p.split('#')[0];
+      const segs = src.split('/'); const fn = segs.pop() || ''; const bk = segs.pop() || 'Bible';
+      const base = fn.replace(/\.md$/i, '');
+      const ref = v.ref || '';
+      const num = Number(((ref.match(/:(\d+)/) || [])[1]));
+      if (!Number.isFinite(num)) continue;
+      const key = `${bk}/${base}`;
+      const entry = byChapter.get(key) || { book: bk, base, verses: [] };
+      entry.verses.push({ num, ref });
+      byChapter.set(key, entry);
+    }
+
     const created = new Set<string>();
     let newCount = 0;
     for (const v of plan) {
@@ -309,10 +350,12 @@ export default class VerseFlowPlugin extends Plugin {
       // ensure folder
       try { if (!this.app.vault.getAbstractFileByPath(destDir)) await (this.app.vault as any).createFolder(destDir); } catch {}
 
-      // create file if missing
+      // create file if missing (with all verse stubs)
       const f = this.app.vault.getAbstractFileByPath(destPath) as TFile | null;
       if (!f) {
-        const content = `---\ntitle: ${chapterBase} Notes\nbook: ${bookName}\ncreated: ${this.todayISO()}\n---\n\n# ${chapterBase} – Notes\n\n- Notes that may span multiple verses.\n\n## Per-verse\n\n`; 
+        const key = `${bookName}/${chapterBase}`;
+        const verses = byChapter.get(key)?.verses || this.collectChapterVerses(plan, bookName, chapterBase);
+        const content = this.buildChapterNoteContent(bookName, chapterBase, verses);
         await this.app.vault.create(destPath, content);
         newCount++;
       }
@@ -343,7 +386,13 @@ export default class VerseFlowPlugin extends Plugin {
 
     try { if (!this.app.vault.getAbstractFileByPath(destDir)) await (this.app.vault as any).createFolder(destDir); } catch {}
     let f = this.app.vault.getAbstractFileByPath(destPath) as TFile | null;
-    if (!f) { await this.app.vault.create(destPath, `# ${chapterBase} – Notes\n\n`); f = this.app.vault.getAbstractFileByPath(destPath) as TFile; }
+    if (!f) {
+      const plan = (await this.readJson<Array<{ ref: string; path: string }>>(this.settings.planPath)) || [];
+      const verses = this.collectChapterVerses(plan, bookName, chapterBase);
+      const content = this.buildChapterNoteContent(bookName, chapterBase, verses);
+      await this.app.vault.create(destPath, content);
+      f = this.app.vault.getAbstractFileByPath(destPath) as TFile;
+    }
 
     // Ensure verse heading exists
     const anchor = Number.isFinite(verseNum) ? `v-${verseNum}` : (idxMatch ? `i-${idxMatch[1]}` : `v-1`);
@@ -559,11 +608,17 @@ export default class VerseFlowPlugin extends Plugin {
     }
 
     let filesTouched = 0; let anchorsAdded = 0;
+    const plan = (await this.readJson<Array<{ ref: string; path: string }>>(this.settings.planPath)) || [];
     for (const [destPath, arr] of Object.entries(targets)) {
       const { destDir } = arr[0];
       try { if (!this.app.vault.getAbstractFileByPath(destDir)) await (this.app.vault as any).createFolder(destDir); } catch {}
       let f = this.app.vault.getAbstractFileByPath(destPath) as TFile | null;
-      if (!f) { await this.app.vault.create(destPath, `# ${arr[0].chapterBase} – Notes\n\n`); f = this.app.vault.getAbstractFileByPath(destPath) as TFile; filesTouched++; }
+      if (!f) {
+        const verses = this.collectChapterVerses(plan, destDir.split('/').pop() || 'Bible', arr[0].chapterBase);
+        const content = this.buildChapterNoteContent(destDir.split('/').pop() || 'Bible', arr[0].chapterBase, verses);
+        await this.app.vault.create(destPath, content);
+        f = this.app.vault.getAbstractFileByPath(destPath) as TFile; filesTouched++;
+      }
       let content = await this.app.vault.read(f);
       for (const t of arr) {
         if (!new RegExp(`^#{1,6}\\s+${t.anchor}\\b`, 'm').test(content)) {

@@ -117,20 +117,35 @@ export default class VerseFlowPlugin extends Plugin {
 
   // Build per-chapter verse list from the plan
   private collectChapterVerses(plan: Array<{ ref?: string; path?: string }>, bookName: string, chapterBase: string): Array<{ num: number; ref: string }> {
-    const verses: Array<{ num: number; ref: string }> = [];
-    for (const v of plan) {
-      const p = v.path || ""; if (!p) continue;
-      const parts = p.split("#"); const src = parts[0];
+    const out: Array<{ num: number; ref: string }> = [];
+    const add = (num: number, ref: string) => { if (Number.isFinite(num)) out.push({ num, ref }); };
+
+    const matchOne = (v: { ref?: string; path?: string }, requireBook: boolean): boolean => {
+      const p = v.path || ""; if (!p) return false;
+      const [src, hash = ""] = p.split("#");
       const segs = src.split("/"); const fn = segs.pop() || ""; const book = segs.pop() || "";
       const base = fn.replace(/\.md$/i, "");
-      if (book === bookName && base === chapterBase) {
+      if ((requireBook ? (book === bookName) : true) && base === chapterBase) {
         const ref = v.ref || "";
-        const verseNum = Number(((ref.match(/:(\d+)/) || [])[1]));
-        if (Number.isFinite(verseNum)) verses.push({ num: verseNum, ref });
+        let num = Number(((ref.match(/:(\d+)/i) || [])[1]));
+        if (!Number.isFinite(num)) {
+          const m = (hash.match(/^\^?v(\d+)/i) || p.match(/#\^?v(\d+)/i));
+          num = Number((m || [])[1]);
+        }
+        add(num, ref || `${chapterBase}:${Number.isFinite(num) ? num : ''}`.trim());
+        return true;
       }
+      return false;
+    };
+
+    // Pass 1: strict book+chapter match
+    for (const v of plan) matchOne(v, true);
+    if (out.length === 0) {
+      // Pass 2: chapter base only
+      for (const v of plan) matchOne(v, false);
     }
-    verses.sort((a,b) => a.num - b.num);
-    return verses;
+    out.sort((a, b) => a.num - b.num);
+    return out;
   }
 
   // Build initial chapter note content including all verse stubs

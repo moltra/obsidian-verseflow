@@ -21,3 +21,8 @@ data.json
 # Exclude macOS Finder (System Explorer) View States
 .DS_Store
 /.obsidian/
+
+# build scripts
+/scripts/create-beta.ps1
+/scripts/*.ps1
+obsidian_plugin_guidelines.md   

@@ -10,9 +10,10 @@ VerseFlow helps you plan, read, and study Scripture in Obsidian with daily targe
 - Finalize to log: updates a per‑verse read map, appends events and session summaries.
 - Dataview dashboards for progress, reading history, and analytics.
 - Designed to be offline‑first. Optional online enrichments (e.g., cross‑refs) can be added later.
+- Per‑verse chapter notes with pre‑created stubs per chapter and anchors (#v-<n>), plus dual verse+notes links in Today’s list.
+- Notes link modes: `verse`, `chapter`, or `dual` (default `dual`).
 
 Planned (roadmap):
-- Per‑verse notes (auto‑created on demand) with verse text, cross‑references, and personal notes.
 - Multiple plans and quick switching.
 - Optional external verse text fetch with local caching.
 
@@ -42,6 +43,9 @@ Planned (roadmap):
 - `useMap`: prefer deriving progress from the map (recommended after seeding).
 - `maxToday`: cap for today’s target list (e.g., 40).
 - `previewCount`: how many verses to preview after today’s target.
+- `notesBasePath`: base folder for chapter notes (default: `VerseNotes`).
+- `notesSuffix`: filename suffix for chapter notes (default: `_notes.md`).
+- `notesLinkMode`: how links appear in Today’s list (`verse` | `chapter` | `dual`; default: `dual`).
 
 Planned settings:
 - `notesMode` (perVerse | inline | ledger), `notesFolder`, `noteFilenamePattern`.
@@ -58,11 +62,22 @@ Planned settings:
 - Rebuild Map From Events
 - Open Bible Dashboard
 - Insert Progress Summary (read‑only)
+- Scaffold Chapter Notes From Plan (creates chapter notes with all per‑verse stubs)
+- Open Chapter Note at Cursor (ensures `### v-<n> — <ref>` and opens at anchor)
+- Append Notes For Checked Verses (adds missing per‑verse stubs for all checked items)
+- Regenerate Bible Dashboard (writes brace‑wrapped DataviewJS blocks)
 
 Planned:
 - Create/Open Verse Note (for current index)
 - Insert Notes Table for Today
 - Toggle Link Target (verseNote ↔ verseFile)
+
+## Quick start
+- Ensure your plan JSON is set under Settings → VerseFlow (supports anchors like `#^v1`).
+- Run “Scaffold Chapter Notes From Plan” to create chapter notes under `VerseNotes/<Book>/<Chapter>_notes.md` with all per‑verse stubs.
+- Run “Insert Today’s Target”. In `dual` mode you’ll see both the verse link and a small “notes” link (`#v-<n>`).
+- Click the “notes” link to jump straight to the per‑verse section in the chapter note.
+- After reading and checking items, run “Append Notes For Checked Verses” to ensure stubs exist for everything you completed.
 
 ## Data files
 - `chronological_plan.vault.json`: array of `{ ref, path }` (index is canonical order).
@@ -81,7 +96,7 @@ Planned:
 - Desktop and mobile compatible. Avoids desktop‑only APIs by default.
 
 ## Development
-- Node v16+ recommended.
+- Node v18+ LTS recommended.
 - Commands:
   - `npm run dev` – watch build (esbuild)
   - `npm run build` – typecheck then build `main.js` at repo root
@@ -89,7 +104,7 @@ Planned:
 
 ### Project layout
 - `manifest.json`, `main.js`, `styles.css` (optional) at repo root for distribution.
-- Source lives under `src/` (TypeScript).
+- In this repo, source lives at the repo root (`main.ts`). If you adopt a `src/` layout, update build scripts accordingly.
 - Do not include `node_modules/` or build artifacts in releases.
 
 ## Releasing (per Obsidian plugin guidelines)

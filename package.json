@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-verseflow",
-	"version": "0.1.0",
+	"version": "0.1.1-beta.10",
 	"description": "VerseFlow: Bible reading plans with daily targets, per-verse notes, progress map/logs, and Dataview dashboards.",
 	"main": "main.js",
 	"scripts": {
@@ -8,7 +8,15 @@
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
 		"version": "node version-bump.mjs && git add manifest.json versions.json"
 	},
-	"keywords": ["obsidian", "obsidian-plugin", "bible", "scripture", "reading-plans", "dataview", "notes"],
+	"keywords": [
+		"obsidian",
+		"obsidian-plugin",
+		"bible",
+		"scripture",
+		"reading-plans",
+		"dataview",
+		"notes"
+	],
 	"author": "moltra",
 	"license": "MIT",
 	"devDependencies": {

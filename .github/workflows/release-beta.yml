@@ -1,0 +1,59 @@
+name: Release Beta (BRAT)
+
+on:
+  push:
+    tags:
+      - 'beta-*'     # e.g. beta-0.1.0-beta.1
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write  # required for creating releases and uploading assets
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Build plugin
+        run: npm run build
+
+      - name: Prepare release artifacts
+        shell: bash
+        run: |
+          ls -la
+          test -f manifest.json || { echo 'manifest.json missing'; exit 1; }
+          test -f main.js || { echo 'main.js missing after build'; exit 1; }
+          mkdir -p dist
+          cp manifest.json dist/
+          cp main.js dist/
+          if [ -f styles.css ]; then cp styles.css dist/; fi
+
+      - name: Create GitHub Release (pre-release)
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+          files: |
+            dist/manifest.json
+            dist/main.js
+            dist/styles.css
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

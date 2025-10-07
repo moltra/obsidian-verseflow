@@ -180,11 +180,18 @@ export default class VerseFlowPlugin extends Plugin {
     const chapterLink = (p: string) => p.split("#")[0].replace(/\.md$/, "");
 
     const out: string[] = [];
-    // Link to dashboard for quick navigation (optional)
+    // Optional dashboard link as a normal paragraph (renders well in Live Preview)
     if (this.settings.includeDashboardLink) {
-      out.push(`> See [[Bible-Dashboard|Bible Dashboard]] for overall progress.`);
+      out.push(`See [[Bible-Dashboard|Bible Dashboard]] for overall progress.`);
     }
+
+    // Progress summary at the beginning (normal paragraph for Live Preview)
+    const pctNow = total ? (((versesRead ?? 0) / total) * 100).toFixed(1) : "0.0";
+    out.push(`Progress: ${versesRead}/${total} (${pctNow}%). Target ${targetDays} days from ${prog.start_date}. Today's pace: ${pace}.`);
+
+    // Callout header and a blank quoted line to help Live Preview render lists correctly
     out.push(`> [!abstract]+ Today's target to stay on schedule (${todayCount})`);
+    out.push(`> `);
     let lastLbl = "";
     for (let i = 0; i < todayCount; i++) {
       const v = plan[lastOrder + i]; if (!v) break;

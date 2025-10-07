@@ -180,10 +180,6 @@ export default class VerseFlowPlugin extends Plugin {
     const chapterLink = (p: string) => p.split("#")[0].replace(/\.md$/, "");
 
     const out: string[] = [];
-    // Optional dashboard link as a normal paragraph (renders well in Live Preview)
-    if (this.settings.includeDashboardLink) {
-      out.push(`See [[Bible-Dashboard|Bible Dashboard]] for overall progress.`);
-    }
 
     // Progress summary at the beginning (normal paragraph for Live Preview)
     const pctNow = total ? (((versesRead ?? 0) / total) * 100).toFixed(1) : "0.0";
@@ -425,7 +421,10 @@ export default class VerseFlowPlugin extends Plugin {
     const daysRemaining = Math.max(1, targetDays - daysElapsed);
     let pace = Math.ceil(remaining / daysRemaining); if (!Number.isFinite(pace) || pace < 1) pace = 1;
     const pct = total ? (((prog.verses_read ?? 0) / total) * 100).toFixed(1) : "0.0";
-    const line = `> Progress: ${prog.verses_read}/${total} (${pct}%). Target ${targetDays} days from ${prog.start_date}. Today's pace: ${pace}.`;
+    let line = `> Progress: ${prog.verses_read}/${total} (${pct}%). Target ${targetDays} days from ${prog.start_date}. Today's pace: ${pace}.`;
+    if (this.settings.includeDashboardLink) {
+      line += ` See [[Bible-Dashboard|Bible Dashboard]] for overall progress.`;
+    }
 
     if (editor) {
       editor.replaceSelection(line + "\n");

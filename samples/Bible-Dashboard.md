@@ -6,7 +6,7 @@
 ## Progress (DataviewJS)
 ```dataviewjs
 const p = dv.page("Bible-Progress");
-if (!p) { dv.paragraph("Bible-Progress.md not found"); return; }
+if (!p) { dv.paragraph("Bible-Progress.md not found"); } else {
 const total = p.total_verses ?? 31102;
 const pct = total ? ((p.verses_read ?? 0) / total * 100).toFixed(1) + "%" : "0.0%";
 dv.table([
@@ -24,12 +24,13 @@ dv.table([
   p.start_date ?? dv.luxon.DateTime.now().toISODate(),
   p.target_days ?? 365
 ]]);
+}
 ```
 
 ## Recommended pace today (DataviewJS)
 ```dataviewjs
 const p = dv.page("Bible-Progress");
-if (!p) { dv.el("div", "Bible-Progress.md not found"); return; }
+if (!p) { dv.el("div", "Bible-Progress.md not found"); } else {
 const total = p.total_verses ?? 31102;
 const start = new Date((p.start_date ?? dv.current().file.ctime.toISODate()) + "T00:00:00");
 const today = new Date(dv.current().file.cday.toISODate() + "T00:00:00");
@@ -41,6 +42,7 @@ const daysRemaining = Math.max(1, targetDays - daysElapsed);
 const pace = Math.max(1, Math.ceil(remaining / daysRemaining));
 const catchup = Math.max(0, expected - (p.verses_read ?? 0));
 dv.paragraph(`Recommended today: ${catchup || pace} verses (pace ${pace}, catch-up ${catchup}).`);
+}
 ```
 
 ## Reading history (DataviewJS)
@@ -48,7 +50,7 @@ dv.paragraph(`Recommended today: ${catchup || pace} verses (pace ${pace}, catch-
 // Parse Markdown table in Bible-Read-Log.md: | date | start_ref | end_ref | count | last_order |
 let text = "";
 try { const f = app.vault.getAbstractFileByPath("Bible-Read-Log.md"); if (f) text = await app.vault.read(f); } catch {}
-if (!text) { dv.paragraph("Bible-Read-Log.md not found or empty"); return; }
+if (!text) { dv.paragraph("Bible-Read-Log.md not found or empty"); } else {
 const lines = text.split('\n').filter(l => l.startsWith('|'));
 // Remove header separators
 const data = lines.filter(l => !/^\|\s*-/.test(l)).slice(1);
@@ -58,6 +60,7 @@ const rows = data.map(line => {
 });
 rows.sort((a,b) => b[0].localeCompare(a[0]));
 dv.table(["date","start_ref","end_ref","count","last_order"], rows);
+}
 ```
 
 ## Notes

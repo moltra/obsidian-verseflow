@@ -54,6 +54,7 @@ export default class VerseFlowPlugin extends Plugin {
     // Convenience
     this.addCommand({ id: "vf-open-dashboard", name: "Open Bible Dashboard", callback: () => this.openBibleDashboard() });
     this.addCommand({ id: "vf-insert-progress-summary", name: "Insert Progress Summary (read-only)", callback: () => this.insertProgressSummary() });
+    this.addCommand({ id: "vf-setup-notes", name: "Setup VerseFlow Files", callback: () => this.setupVerseFlowFiles() });
 
     // Ribbon (best-effort, no-op on mobile)
     try { this.addRibbonIcon("checkmark", "VerseFlow: Finalize Bible Read", () => this.finalizeBibleRead()); } catch {}
@@ -160,6 +161,8 @@ export default class VerseFlowPlugin extends Plugin {
     const chapterLink = (p: string) => p.split("#")[0].replace(/\.md$/, "");
 
     const out: string[] = [];
+    // Link to dashboard for quick navigation
+    out.push(`> See [[Bible-Dashboard|Bible Dashboard]] for overall progress.`);
     out.push(`> [!abstract]+ Today's target to stay on schedule (${todayCount})`);
     let lastLbl = "";
     for (let i = 0; i < todayCount; i++) {
@@ -181,6 +184,37 @@ export default class VerseFlowPlugin extends Plugin {
     }
 
     editor.replaceSelection(out.join("\n") + "\n");
+  }
+
+  async setupVerseFlowFiles() {
+    const { progressPath, eventsPath, mapPath } = this.settings;
+    const ensure = async (path: string, content: string) => {
+      const f = this.app.vault.getAbstractFileByPath(path) as TFile | null;
+      if (!f) await this.app.vault.create(path, content);
+    };
+
+    // Progress frontmatter
+    const today = this.todayISO();
+    const progressFm = `---\nlast_order: 0\nverses_read: 0\ntotal_verses: 31102\nstart_date: ${today}\ntarget_days: 365\n---\n`;
+    await ensure(progressPath, progressFm);
+
+    // Events and log tables
+    await ensure(eventsPath, `| timestamp | idx | ref | path |\n|---|---:|---|---|\n`);
+    await ensure("Bible-Read-Log.md", `| date | start_ref | end_ref | count | last_order |\n|---|---|---|---:|---:|\n`);
+
+    // Map JSON
+    const mapF = this.app.vault.getAbstractFileByPath(mapPath) as TFile | null;
+    if (!mapF) await this.app.vault.create(mapPath, "{}\n");
+
+    // Minimal dashboard if missing (requires Dataview)
+    const dashPath = "Bible-Dashboard.md";
+    const dash = this.app.vault.getAbstractFileByPath(dashPath) as TFile | null;
+    if (!dash) {
+      const dashContent = `# Bible Reading Dashboard\n\n- Ensure the Dataview plugin is enabled.\n\n## Progress (DataviewJS)\n\n\`\`\`dataviewjs\nconst p = dv.page(\"Bible-Progress\");\nif (!p) { dv.paragraph(\"Bible-Progress.md not found\"); } else {\n  const total = p.total_verses ?? 31102;\n  const pct = total ? ((p.verses_read ?? 0) / total * 100).toFixed(1) + \"%\" : \"0.0%\";\n  dv.table([\"last_order\",\"verses_read\",\"total_verses\",\"progress\",\"start_date\",\"target_days\"], [[\n    p.last_order ?? 0,\n    p.verses_read ?? 0,\n    total,\n    pct,\n    p.start_date ?? dv.luxon.DateTime.now().toISODate(),\n    p.target_days ?? 365\n  ]]);\n}\n\`\`\`\n`;
+      await this.app.vault.create(dashPath, dashContent);
+    }
+
+    new Notice("VerseFlow: setup complete");
   }
 
   async finalizeBibleRead() {

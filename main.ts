@@ -22,6 +22,11 @@ export interface VerseFlowSettings {
   useMap: boolean;
   maxToday: number;
   previewCount: number;
+  includeDashboardLink: boolean;
+  setupOnFirstEnable: boolean;
+  initialized?: boolean;
+  notesBasePath: string; // base folder for chapter notes
+  notesSuffix: string;   // suffix for chapter note files
 }
 
 const DEFAULT_SETTINGS: VerseFlowSettings = {
@@ -32,6 +37,11 @@ const DEFAULT_SETTINGS: VerseFlowSettings = {
   useMap: true,
   maxToday: 40,
   previewCount: 20,
+  includeDashboardLink: true,
+  setupOnFirstEnable: false,
+  initialized: false,
+  notesBasePath: "VerseNotes",
+  notesSuffix: ".notes.md",
 };
 
 export default class VerseFlowPlugin extends Plugin {
@@ -40,6 +50,14 @@ export default class VerseFlowPlugin extends Plugin {
   async onload() {
     await this.loadSettings();
     this.addSettingTab(new VerseFlowSettingsTab(this.app, this));
+
+    // Optional first-time setup
+    try {
+      if (this.settings.setupOnFirstEnable && !this.settings.initialized) {
+        await this.setupVerseFlowFiles();
+        this.settings.initialized = true; await this.saveSettings();
+      }
+    } catch {}
 
     // Core commands
     this.addCommand({ id: "vf-insert-today-target", name: "Insert Today’s Target", callback: () => this.insertTodayTarget() });
@@ -55,6 +73,7 @@ export default class VerseFlowPlugin extends Plugin {
     this.addCommand({ id: "vf-open-dashboard", name: "Open Bible Dashboard", callback: () => this.openBibleDashboard() });
     this.addCommand({ id: "vf-insert-progress-summary", name: "Insert Progress Summary (read-only)", callback: () => this.insertProgressSummary() });
     this.addCommand({ id: "vf-setup-notes", name: "Setup VerseFlow Files", callback: () => this.setupVerseFlowFiles() });
+    this.addCommand({ id: "vf-scaffold-chapter-notes", name: "Scaffold Chapter Notes From Plan", callback: () => this.scaffoldChapterNotesCommand() });
 
     // Ribbon (best-effort, no-op on mobile)
     try { this.addRibbonIcon("checkmark", "VerseFlow: Finalize Bible Read", () => this.finalizeBibleRead()); } catch {}
@@ -161,8 +180,10 @@ export default class VerseFlowPlugin extends Plugin {
     const chapterLink = (p: string) => p.split("#")[0].replace(/\.md$/, "");
 
     const out: string[] = [];
-    // Link to dashboard for quick navigation
-    out.push(`> See [[Bible-Dashboard|Bible Dashboard]] for overall progress.`);
+    // Link to dashboard for quick navigation (optional)
+    if (this.settings.includeDashboardLink) {
+      out.push(`> See [[Bible-Dashboard|Bible Dashboard]] for overall progress.`);
+    }
     out.push(`> [!abstract]+ Today's target to stay on schedule (${todayCount})`);
     let lastLbl = "";
     for (let i = 0; i < todayCount; i++) {
@@ -215,6 +236,41 @@ export default class VerseFlowPlugin extends Plugin {
     }
 
     new Notice("VerseFlow: setup complete");
+  }
+
+  async scaffoldChapterNotesCommand() {
+    const { planPath, notesBasePath, notesSuffix } = this.settings;
+    const plan: Array<{ ref?: string; path?: string }> | null = await this.readJson(planPath);
+    if (!Array.isArray(plan) || plan.length === 0) { new Notice("VerseFlow: plan not found"); return; }
+
+    // Ensure base folder exists
+    try { if (!this.app.vault.getAbstractFileByPath(notesBasePath)) await (this.app.vault as any).createFolder(notesBasePath); } catch {}
+
+    const created = new Set<string>();
+    let newCount = 0;
+    for (const v of plan) {
+      const src = (v.path || '').split('#')[0]; if (!src) continue;
+      const parts = src.split('/');
+      const fileName = parts.pop() || '';
+      const bookName = parts.pop() || 'Bible'; // last folder segment as book name
+      const chapterBase = fileName.replace(/\.md$/i, '');
+      const destDir = `${notesBasePath}/${bookName}`;
+      const destPath = `${destDir}/${chapterBase}${notesSuffix}`;
+      if (created.has(destPath)) continue;
+      created.add(destPath);
+
+      // ensure folder
+      try { if (!this.app.vault.getAbstractFileByPath(destDir)) await (this.app.vault as any).createFolder(destDir); } catch {}
+
+      // create file if missing
+      const f = this.app.vault.getAbstractFileByPath(destPath) as TFile | null;
+      if (!f) {
+        const content = `---\ntitle: ${chapterBase} Notes\nbook: ${bookName}\ncreated: ${this.todayISO()}\n---\n\n# ${chapterBase} – Notes\n\n- Notes that may span multiple verses.\n\n## Per-verse\n\n`; 
+        await this.app.vault.create(destPath, content);
+        newCount++;
+      }
+    }
+    new Notice(`VerseFlow: scaffolded ${newCount} chapter note(s) under ${notesBasePath}`);
   }
 
   async finalizeBibleRead() {
@@ -349,7 +405,7 @@ export default class VerseFlowPlugin extends Plugin {
   }
 
   async insertProgressSummary() {
-    const editor = this.getActiveEditor(); if (!editor) { new Notice("VerseFlow: no active editor"); return; }
+    const editor = this.getActiveEditor();
     const { planPath } = this.settings;
     const plan = (await this.readJson<Array<unknown>>(planPath)) || [];
     const prog = await this.readProgress();
@@ -363,7 +419,16 @@ export default class VerseFlowPlugin extends Plugin {
     let pace = Math.ceil(remaining / daysRemaining); if (!Number.isFinite(pace) || pace < 1) pace = 1;
     const pct = total ? (((prog.verses_read ?? 0) / total) * 100).toFixed(1) : "0.0";
     const line = `> Progress: ${prog.verses_read}/${total} (${pct}%). Target ${targetDays} days from ${prog.start_date}. Today's pace: ${pace}.`;
-    editor.replaceSelection(line + "\n");
+
+    if (editor) {
+      editor.replaceSelection(line + "\n");
+    } else {
+      const summaryPath = "VerseFlow-Summary.md";
+      const prev = (await this.readText(summaryPath)) || "";
+      const next = (prev.endsWith("\n") || prev.length === 0) ? prev + line + "\n" : prev + "\n" + line + "\n";
+      await this.upsertText(summaryPath, next);
+      new Notice(`VerseFlow: summary appended to ${summaryPath}`);
+    }
   }
 }
 
@@ -402,5 +467,9 @@ class VerseFlowSettingsTab extends PluginSettingTab {
     addToggle("Use Map", "Prefer progress derived from map over frontmatter.", "useMap");
     addNumber("Max Today", "Upper bound for today's target length.", "maxToday");
     addNumber("Preview Count", "How many verses to preview after today's list.", "previewCount");
+    addToggle("Include Dashboard Link", "Add a link to Bible-Dashboard at the top of inserted targets.", "includeDashboardLink");
+    addToggle("Run Setup On Enable", "Run one-time setup automatically the first time the plugin is enabled.", "setupOnFirstEnable");
+    addText("Notes Base Path", "Folder to store per-chapter notes (will be created if missing).", "notesBasePath");
+    addText("Notes Suffix", "File name suffix for chapter notes (e.g., .notes.md).", "notesSuffix");
   }
 }

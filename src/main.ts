@@ -1,51 +1,21 @@
-import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile, normalizePath } from "obsidian";
+import { Editor, MarkdownView, Notice, Plugin, TFile } from "obsidian";
+import { VerseFlowSettings, DEFAULT_SETTINGS, VerseFlowSettingsTab } from "./settings";
+import { 
+  todayISO, 
+  parseDateISO, 
+  readJson, 
+  writeJson, 
+  readText, 
+  upsertText, 
+  computeFromMap, 
+  collectChapterVerses, 
+  buildChapterNoteContent,
+  np
+} from "./utils";
 
 /**
  * VerseFlow – Bible reading workflow for Obsidian.
- *
- * Commands:
- * - Insert Today’s Target
- * - Finalize Bible Read
- * - Clear Bible Checkboxes
- * - Seed Map From Progress
- * - Recompute Progress From Map
- * - Rebuild Map From Events
- * - Open Bible Dashboard
- * - Insert Progress Summary (read-only)
  */
-
-export interface VerseFlowSettings {
-  planPath: string;
-  progressPath: string;
-  mapPath: string;
-  eventsPath: string;
-  useMap: boolean;
-  maxToday: number;
-  previewCount: number;
-  includeDashboardLink: boolean;
-  setupOnFirstEnable: boolean;
-  initialized?: boolean;
-  notesBasePath: string; // base folder for chapter notes
-  notesSuffix: string;   // suffix for chapter note files
-  notesLinkMode: 'verse' | 'chapter' | 'dual'; // controls links in today's checklist
-}
-
-const DEFAULT_SETTINGS: VerseFlowSettings = {
-  planPath: "chronological_plan.vault.json",
-  progressPath: "Bible-Progress.md",
-  mapPath: "bible-read-map.json",
-  eventsPath: "Bible-Read-Events.md",
-  useMap: true,
-  maxToday: 40,
-  previewCount: 20,
-  includeDashboardLink: true,
-  setupOnFirstEnable: false,
-  initialized: false,
-  notesBasePath: "VerseNotes",
-  notesSuffix: "_notes.md",
-  notesLinkMode: 'dual',
-};
-
 export default class VerseFlowPlugin extends Plugin {
   settings: VerseFlowSettings;
 
@@ -57,9 +27,13 @@ export default class VerseFlowPlugin extends Plugin {
     try {
       if (this.settings.setupOnFirstEnable && !this.settings.initialized) {
         await this.setupVerseFlowFiles();
-        this.settings.initialized = true; await this.saveSettings();
+        this.settings.initialized = true; 
+        await this.saveSettings();
       }
-    } catch {}
+    } catch (error) {
+      console.error("VerseFlow: First-time setup failed", error);
+      new Notice("VerseFlow: Setup failed. Check console for details.");
+    }
 
     // Core commands (editor-only use editorCallback)
     this.addCommand({ id: "vf-insert-today-target", name: "Insert Today’s Target", editorCallback: () => this.insertTodayTarget() });
@@ -81,79 +55,13 @@ export default class VerseFlowPlugin extends Plugin {
     this.addCommand({ id: "vf-regenerate-dashboard", name: "Regenerate Bible Dashboard", callback: () => this.regenerateBibleDashboard() });
 
     // Ribbon (best-effort, no-op on mobile)
-    try { this.addRibbonIcon("checkmark", "VerseFlow: Finalize Bible Read", () => this.finalizeBibleRead()); } catch {}
-    try { this.addRibbonIcon("document", "VerseFlow: Insert Today’s Target", () => this.insertTodayTarget()); } catch {}
-    try { this.addRibbonIcon("trash", "VerseFlow: Clear Bible Checkboxes", () => this.clearBibleCheckboxes()); } catch {}
+    try { this.addRibbonIcon("checkmark", "VerseFlow: Finalize Bible Read", () => this.finalizeBibleRead()); } catch (e) { console.debug("VerseFlow: Could not add ribbon icon", e); }
+    try { this.addRibbonIcon("document", "VerseFlow: Insert Today’s Target", () => this.insertTodayTarget()); } catch (e) { console.debug("VerseFlow: Could not add ribbon icon", e); }
+    try { this.addRibbonIcon("trash", "VerseFlow: Clear Bible Checkboxes", () => this.clearBibleCheckboxes()); } catch (e) { console.debug("VerseFlow: Could not add ribbon icon", e); }
   }
 
   async loadSettings() { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); }
   async saveSettings() { await this.saveData(this.settings); }
-
-  // ---------- Utils ----------
-  todayISO(): string { return new Date().toISOString().slice(0, 10); }
-  parseDateISO(d: string): Date { return new Date(`${d}T00:00:00`); }
-
-  async readJson<T = any>(path: string): Promise<T | null> {
-    const f = this.app.vault.getAbstractFileByPath(path);
-    if (!f) return null;
-    try { return JSON.parse(await this.app.vault.read(f as TFile)); } catch { return null; }
-  }
-  async writeJson(path: string, obj: unknown): Promise<void> {
-    const f = this.app.vault.getAbstractFileByPath(path);
-    const json = JSON.stringify(obj, null, 2);
-    if (f instanceof TFile) await this.app.vault.modify(f, json);
-    else await this.app.vault.create(path, json);
-  }
-  async readText(path: string): Promise<string | null> {
-    const f = this.app.vault.getAbstractFileByPath(path);
-    if (!f) return null;
-    try { return await this.app.vault.read(f as TFile); } catch { return null; }
-  }
-  async upsertText(path: string, content: string): Promise<void> {
-    const f = this.app.vault.getAbstractFileByPath(path);
-    if (f instanceof TFile) await this.app.vault.modify(f, content);
-    else await this.app.vault.create(path, content);
-  }
-
-  // Build per-chapter verse list from the plan
-  private collectChapterVerses(plan: Array<{ ref?: string; path?: string }>, bookName: string, chapterBase: string): Array<{ num: number; ref: string }> {
-    const out: Array<{ num: number; ref: string }> = [];
-    const add = (num: number, ref: string) => { if (Number.isFinite(num)) out.push({ num, ref }); };
-
-    const matchOne = (v: { ref?: string; path?: string }, requireBook: boolean): boolean => {
-      const p = v.path || ""; if (!p) return false;
-      const [src, hash = ""] = p.split("#");
-      const segs = src.split("/"); const fn = segs.pop() || ""; const book = segs.pop() || "";
-      const base = fn.replace(/\.md$/i, "");
-      if ((requireBook ? (book === bookName) : true) && base === chapterBase) {
-        const ref = v.ref || "";
-        let num = Number(((ref.match(/:(\d+)/i) || [])[1]));
-        if (!Number.isFinite(num)) {
-          const m = (hash.match(/^\^?v(\d+)/i) || p.match(/#\^?v(\d+)/i));
-          num = Number((m || [])[1]);
-        }
-        add(num, ref || `${chapterBase}:${Number.isFinite(num) ? num : ''}`.trim());
-        return true;
-      }
-      return false;
-    };
-
-    // Pass 1: strict book+chapter match
-    for (const v of plan) matchOne(v, true);
-    if (out.length === 0) {
-      // Pass 2: chapter base only
-      for (const v of plan) matchOne(v, false);
-    }
-    out.sort((a, b) => a.num - b.num);
-    return out;
-  }
-
-  // Build initial chapter note content including all verse stubs
-  private buildChapterNoteContent(bookName: string, chapterBase: string, verses: Array<{ num: number; ref: string }>): string {
-    const header = `---\ntitle: ${chapterBase} Notes\nbook: ${bookName}\ncreated: ${this.todayISO()}\n---\n\n# ${chapterBase} – Notes\n\n- Notes that may span multiple verses.\n\n## Per-verse\n\n`;
-    const sections = verses.map(v => `### v-${v.num} — ${v.ref}\n\n- \n\n`).join("");
-    return header + sections;
-  }
 
   getActiveEditor(): Editor | null {
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
@@ -161,54 +69,40 @@ export default class VerseFlowPlugin extends Plugin {
     return this.app.workspace.activeEditor?.editor ?? null;
   }
 
-  np(p: string): string { return normalizePath(p); }
-
   /** Read progress frontmatter snapshot. */
   async readProgress(): Promise<{ last_order: number; verses_read: number; total_verses: number; start_date: string; target_days: number; }> {
     const { progressPath } = this.settings;
     const f = this.app.vault.getAbstractFileByPath(progressPath) as TFile | null;
-    if (!f) return { last_order: 0, verses_read: 0, total_verses: 31102, start_date: this.todayISO(), target_days: 365 };
+    if (!f) return { last_order: 0, verses_read: 0, total_verses: 31102, start_date: todayISO(), target_days: 365 };
     const fm = this.app.metadataCache.getFileCache(f)?.frontmatter ?? {} as any;
     return {
       last_order: Number.parseInt(fm.last_order ?? 0) || 0,
       verses_read: Number.parseInt(fm.verses_read ?? 0) || 0,
       total_verses: Number.parseInt(fm.total_verses ?? 31102) || 31102,
-      start_date: typeof fm.start_date === "string" ? fm.start_date : this.todayISO(),
+      start_date: typeof fm.start_date === "string" ? fm.start_date : todayISO(),
       target_days: Number.parseInt(fm.target_days ?? 365) || 365,
     };
-  }
-
-  /** Compute counts from map (unique read count and first unread index). */
-  computeFromMap(mapObj: Record<string, unknown> | null, total: number): { uniqueRead: number; firstUnread: number } {
-    let uniqueRead = 0; let firstUnread = 0; let seenUnread = false;
-    for (let i = 0; i < total; i++) {
-      const v: any = mapObj?.[i as any];
-      const has = Array.isArray(v) ? v.length > 0 : !!v;
-      if (has) uniqueRead++; else if (!seenUnread) { firstUnread = i; seenUnread = true; }
-    }
-    if (!seenUnread) firstUnread = total; // fully read
-    return { uniqueRead, firstUnread };
   }
 
   // ---------- Commands ----------
   async insertTodayTarget() {
     const { planPath, useMap, maxToday, previewCount } = this.settings;
-    const plan: Array<{ ref: string; path: string }> | null = await this.readJson(planPath);
+    const plan: Array<{ ref: string; path: string }> | null = await readJson(this.app, planPath);
     if (!Array.isArray(plan) || plan.length === 0) { new Notice("VerseFlow: plan not found"); return; }
 
     const prog = await this.readProgress();
     let versesRead = prog.verses_read;
     let lastOrder = prog.last_order;
 
-    const mapObj = await this.readJson<Record<string, unknown>>(this.settings.mapPath);
+    const mapObj = await readJson<Record<string, unknown>>(this.app, this.settings.mapPath);
     if (useMap && mapObj) {
-      const c = this.computeFromMap(mapObj, plan.length);
+      const c = computeFromMap(mapObj, plan.length);
       versesRead = c.uniqueRead; lastOrder = c.firstUnread;
     }
 
     const total = prog.total_verses ?? plan.length;
-    const start = this.parseDateISO(prog.start_date ?? this.todayISO());
-    const today = this.parseDateISO(this.todayISO());
+    const start = parseDateISO(prog.start_date ?? todayISO());
+    const today = parseDateISO(todayISO());
     let daysElapsed = Math.floor((today.getTime() - start.getTime()) / 86400000) + 1;
     if (!Number.isFinite(daysElapsed) || daysElapsed < 1) daysElapsed = 1;
     const targetDays = prog.target_days ?? 365;
@@ -229,11 +123,11 @@ export default class VerseFlowPlugin extends Plugin {
 
     const out: string[] = [];
 
-    // Progress summary at the beginning (normal paragraph for Live Preview)
+    // Progress summary at the beginning
     const pctNow = total ? (((versesRead ?? 0) / total) * 100).toFixed(1) : "0.0";
     out.push(`Progress: ${versesRead}/${total} (${pctNow}%). Target ${targetDays} days from ${prog.start_date}. Today's pace: ${pace}.`);
 
-    // Callout header and a blank quoted line to help Live Preview render lists correctly
+    // Callout header
     out.push(`> [!abstract]+ Today's target to stay on schedule (${todayCount})`);
     out.push(`> `);
     let lastLbl = "";
@@ -245,7 +139,6 @@ export default class VerseFlowPlugin extends Plugin {
 
       // Build links per notesLinkMode
       const verseLink = `[[${v.path}|${v.ref}]]`;
-      // Compute chapter notes path (same logic as scaffolder)
       const src = (v.path || '').split('#')[0];
       const parts2 = src.split('/');
       const fileName2 = parts2.pop() || '';
@@ -303,7 +196,7 @@ export default class VerseFlowPlugin extends Plugin {
     };
 
     // Progress frontmatter
-    const today = this.todayISO();
+    const today = todayISO();
     const progressFm = `---\nlast_order: 0\nverses_read: 0\ntotal_verses: 31102\nstart_date: ${today}\ntarget_days: 365\n---\n`;
     await ensure(progressPath, progressFm);
 
@@ -325,11 +218,17 @@ export default class VerseFlowPlugin extends Plugin {
 
   async scaffoldChapterNotesCommand() {
     const { planPath, notesBasePath, notesSuffix } = this.settings;
-    const plan: Array<{ ref?: string; path?: string }> | null = await this.readJson(planPath);
+    const plan: Array<{ ref?: string; path?: string }> | null = await readJson(this.app, planPath);
     if (!Array.isArray(plan) || plan.length === 0) { new Notice("VerseFlow: plan not found"); return; }
 
     // Ensure base folder exists
-    try { if (!this.app.vault.getAbstractFileByPath(notesBasePath)) await (this.app.vault as any).createFolder(notesBasePath); } catch {}
+    try { 
+      if (!this.app.vault.getAbstractFileByPath(notesBasePath)) {
+        await this.app.vault.createFolder(notesBasePath);
+      }
+    } catch (e) {
+      console.warn("VerseFlow: createFolder error", e);
+    }
 
     // Pre-group verses by chapter for efficiency
     const byChapter = new Map<string, { book: string; base: string; verses: Array<{ num: number; ref: string }> }>();
@@ -363,14 +262,18 @@ export default class VerseFlowPlugin extends Plugin {
       created.add(destPath);
 
       // ensure folder
-      try { if (!this.app.vault.getAbstractFileByPath(destDir)) await (this.app.vault as any).createFolder(destDir); } catch {}
+      try { 
+        if (!this.app.vault.getAbstractFileByPath(destDir)) {
+          await this.app.vault.createFolder(destDir);
+        }
+      } catch {}
 
       // create file if missing (with all verse stubs)
       const f = this.app.vault.getAbstractFileByPath(destPath) as TFile | null;
       if (!f) {
         const key = `${bookName}/${chapterBase}`;
-        const verses = byChapter.get(key)?.verses || this.collectChapterVerses(plan, bookName, chapterBase);
-        const content = this.buildChapterNoteContent(bookName, chapterBase, verses);
+        const verses = byChapter.get(key)?.verses || collectChapterVerses(plan, bookName, chapterBase);
+        const content = buildChapterNoteContent(bookName, chapterBase, verses);
         await this.app.vault.create(destPath, content);
         newCount++;
       }
@@ -399,12 +302,17 @@ export default class VerseFlowPlugin extends Plugin {
     const destDir = `${this.settings.notesBasePath}/${bookName}`;
     const destPath = `${destDir}/${chapterSlug}${this.settings.notesSuffix}`;
 
-    try { if (!this.app.vault.getAbstractFileByPath(destDir)) await (this.app.vault as any).createFolder(destDir); } catch {}
+    try { 
+      if (!this.app.vault.getAbstractFileByPath(destDir)) {
+        await this.app.vault.createFolder(destDir);
+      }
+    } catch {}
+    
     let f = this.app.vault.getAbstractFileByPath(destPath) as TFile | null;
     if (!f) {
-      const plan = (await this.readJson<Array<{ ref: string; path: string }>>(this.settings.planPath)) || [];
-      const verses = this.collectChapterVerses(plan, bookName, chapterBase);
-      const content = this.buildChapterNoteContent(bookName, chapterBase, verses);
+      const plan = (await readJson<Array<{ ref: string; path: string }>>(this.app, this.settings.planPath)) || [];
+      const verses = collectChapterVerses(plan, bookName, chapterBase);
+      const content = buildChapterNoteContent(bookName, chapterBase, verses);
       await this.app.vault.create(destPath, content);
       f = this.app.vault.getAbstractFileByPath(destPath) as TFile;
     }
@@ -432,7 +340,7 @@ export default class VerseFlowPlugin extends Plugin {
     while ((m = re.exec(content)) !== null) { const n = Number.parseInt(m[1]); if (!Number.isNaN(n)) indices.add(n); }
     if (indices.size === 0) { new Notice("VerseFlow: no checked items found"); return; }
 
-    let mapObj: Record<string, string[]> = (await this.readJson(mapPath)) || {};
+    let mapObj: Record<string, string[]> = (await readJson(this.app, mapPath)) || {};
     const stamp = new Date();
     const localISO = new Date(stamp.getTime() - stamp.getTimezoneOffset() * 60000).toISOString().slice(0, 19);
     const sorted = [...indices].sort((a, b) => a - b);
@@ -440,10 +348,10 @@ export default class VerseFlowPlugin extends Plugin {
       if (!Array.isArray(mapObj[idx])) mapObj[idx] = [] as any;
       const arr = mapObj[idx]; if (arr[arr.length - 1] !== localISO) arr.push(localISO);
     }
-    await this.writeJson(mapPath, mapObj);
+    await writeJson(this.app, mapPath, mapObj);
 
-    const plan = (await this.readJson<Array<{ ref: string; path: string }>>(planPath)) || [];
-    const c = this.computeFromMap(mapObj, plan.length);
+    const plan = (await readJson<Array<{ ref: string; path: string }>>(this.app, planPath)) || [];
+    const c = computeFromMap(mapObj, plan.length);
     await this.updateProgressFrontmatter(progressPath, c.firstUnread, c.uniqueRead);
 
     // events
@@ -480,7 +388,7 @@ export default class VerseFlowPlugin extends Plugin {
   }
 
   async updateProgressFrontmatter(path: string, lastOrder: number, versesRead: number) {
-    const f = this.app.vault.getAbstractFileByPath(this.np(path)) as TFile | null; if (!f) return;
+    const f = this.app.vault.getAbstractFileByPath(np(path)) as TFile | null; if (!f) return;
     await this.app.fileManager.processFrontMatter(f, (fm) => {
       (fm as any).last_order = lastOrder;
       (fm as any).verses_read = versesRead;
@@ -498,31 +406,31 @@ export default class VerseFlowPlugin extends Plugin {
   async seedMapFromProgress() {
     const { mapPath, progressPath, planPath } = this.settings;
     const prog = await this.readProgress();
-    const plan = (await this.readJson<Array<unknown>>(planPath)) || [];
+    const plan = (await readJson<Array<unknown>>(this.app, planPath)) || [];
     const upTo = Math.min(prog.verses_read ?? 0, plan.length);
     const mapObj: Record<string, string[]> = {};
     const stamp = new Date();
     const localISO = new Date(stamp.getTime() - stamp.getTimezoneOffset() * 60000).toISOString().slice(0, 19);
     for (let i = 0; i < upTo; i++) mapObj[i] = [localISO];
-    await this.writeJson(mapPath, mapObj);
+    await writeJson(this.app, mapPath, mapObj);
 
-    const c = this.computeFromMap(mapObj, plan.length);
+    const c = computeFromMap(mapObj, plan.length);
     await this.updateProgressFrontmatter(progressPath, c.firstUnread, c.uniqueRead);
     new Notice(`VerseFlow: seeded ${upTo} indices from progress`);
   }
 
   async recomputeProgressFromMapCommand() {
     const { mapPath, planPath, progressPath } = this.settings;
-    const mapObj = (await this.readJson<Record<string, string[]>>(mapPath)) || {};
-    const plan = (await this.readJson<Array<unknown>>(planPath)) || [];
-    const c = this.computeFromMap(mapObj, (plan as any[]).length);
+    const mapObj = (await readJson<Record<string, string[]>>(this.app, mapPath)) || {};
+    const plan = (await readJson<Array<unknown>>(this.app, planPath)) || [];
+    const c = computeFromMap(mapObj, (plan as any[]).length);
     await this.updateProgressFrontmatter(progressPath, c.firstUnread, c.uniqueRead);
     new Notice(`VerseFlow: recomputed progress (read=${c.uniqueRead})`);
   }
 
   async rebuildMapFromEventsCommand() {
     const { eventsPath, mapPath, planPath, progressPath } = this.settings;
-    const text = (await this.readText(eventsPath)) || "";
+    const text = (await readText(this.app, eventsPath)) || "";
     const lines = text.split("\n").filter((l) => l.startsWith("|") && !/^\|\s*-/.test(l));
     const data = lines.slice(1);
     const mapObj: Record<string, string[]> = {};
@@ -536,9 +444,9 @@ export default class VerseFlowPlugin extends Plugin {
         }
       }
     }
-    await this.writeJson(mapPath, mapObj);
-    const plan = (await this.readJson<Array<unknown>>(planPath)) || [];
-    const c = this.computeFromMap(mapObj, (plan as any[]).length);
+    await writeJson(this.app, mapPath, mapObj);
+    const plan = (await readJson<Array<unknown>>(this.app, planPath)) || [];
+    const c = computeFromMap(mapObj, (plan as any[]).length);
     await this.updateProgressFrontmatter(progressPath, c.firstUnread, c.uniqueRead);
     new Notice(`VerseFlow: rebuilt map from events (${Object.keys(mapObj).length} entries)`);
   }
@@ -566,11 +474,11 @@ export default class VerseFlowPlugin extends Plugin {
   async insertProgressSummary() {
     const editor = this.getActiveEditor();
     const { planPath } = this.settings;
-    const plan = (await this.readJson<Array<unknown>>(planPath)) || [];
+    const plan = (await readJson<Array<unknown>>(this.app, planPath)) || [];
     const prog = await this.readProgress();
     const total = prog.total_verses ?? (plan as any[]).length;
-    const start = this.parseDateISO(prog.start_date ?? this.todayISO());
-    const today = this.parseDateISO(this.todayISO());
+    const start = parseDateISO(prog.start_date ?? todayISO());
+    const today = parseDateISO(todayISO());
     let daysElapsed = Math.floor((today.getTime() - start.getTime()) / 86400000) + 1; if (!Number.isFinite(daysElapsed) || daysElapsed < 1) daysElapsed = 1;
     const targetDays = prog.target_days ?? 365;
     const remaining = Math.max(0, total - (prog.verses_read ?? 0));
@@ -586,9 +494,9 @@ export default class VerseFlowPlugin extends Plugin {
       editor.replaceSelection(line + "\n");
     } else {
       const summaryPath = "VerseFlow-Summary.md";
-      const prev = (await this.readText(summaryPath)) || "";
+      const prev = (await readText(this.app, summaryPath)) || "";
       const next = (prev.endsWith("\n") || prev.length === 0) ? prev + line + "\n" : prev + "\n" + line + "\n";
-      await this.upsertText(summaryPath, next);
+      await upsertText(this.app, summaryPath, next);
       new Notice(`VerseFlow: summary appended to ${summaryPath}`);
     }
   }
@@ -623,83 +531,43 @@ export default class VerseFlowPlugin extends Plugin {
     }
 
     let filesTouched = 0; let anchorsAdded = 0;
-    const plan = (await this.readJson<Array<{ ref: string; path: string }>>(this.settings.planPath)) || [];
-    for (const [destPath, arr] of Object.entries(targets)) {
+    const plan = (await readJson<Array<{ ref: string; path: string }>>(this.app, this.settings.planPath)) || [];
+    
+    // Optimizing async operations with Promise.all for independent files
+    const tasks = Object.entries(targets).map(async ([destPath, arr]) => {
       const { destDir } = arr[0];
-      try { if (!this.app.vault.getAbstractFileByPath(destDir)) await (this.app.vault as any).createFolder(destDir); } catch {}
+      try { 
+        if (!this.app.vault.getAbstractFileByPath(destDir)) {
+          await this.app.vault.createFolder(destDir);
+        }
+      } catch {}
+      
       let f = this.app.vault.getAbstractFileByPath(destPath) as TFile | null;
       if (!f) {
-        const verses = this.collectChapterVerses(plan, destDir.split('/').pop() || 'Bible', arr[0].chapterBase);
-        const content = this.buildChapterNoteContent(destDir.split('/').pop() || 'Bible', arr[0].chapterBase, verses);
+        const verses = collectChapterVerses(plan, destDir.split('/').pop() || 'Bible', arr[0].chapterBase);
+        const content = buildChapterNoteContent(destDir.split('/').pop() || 'Bible', arr[0].chapterBase, verses);
         await this.app.vault.create(destPath, content);
-        f = this.app.vault.getAbstractFileByPath(destPath) as TFile; filesTouched++;
+        f = this.app.vault.getAbstractFileByPath(destPath) as TFile; 
+        filesTouched++;
       }
+      
+      // We must read fresh content here
       let content = await this.app.vault.read(f);
+      let localAdded = 0;
       for (const t of arr) {
         if (!new RegExp(`^#{1,6}\\s+${t.anchor}\\b`, 'm').test(content)) {
           const heading = `\n### ${t.anchor} — ${t.ref}\n\n- `;
-          content += heading; anchorsAdded++;
+          content += heading; 
+          localAdded++;
         }
       }
-      await this.app.vault.modify(f, content);
-    }
-    new Notice(`VerseFlow: updated ${Object.keys(targets).length} note(s), added ${anchorsAdded} anchor(s)`);
-  }
-}
-
-class VerseFlowSettingsTab extends PluginSettingTab {
-  plugin: VerseFlowPlugin;
-  constructor(app: App, plugin: VerseFlowPlugin) { super(app, plugin); this.plugin = plugin; }
-
-  display(): void {
-    const { containerEl } = this;
-    containerEl.empty();
-    containerEl.createEl("h2", { text: "VerseFlow Settings" });
-
-    const addText = (name: string, desc: string, key: keyof VerseFlowSettings) => {
-      new Setting(containerEl)
-        .setName(name)
-        .setDesc(desc)
-        .addText((t) => t.setValue(String(this.plugin.settings[key] ?? "")).onChange(async (v) => { (this.plugin.settings as any)[key] = v; await this.plugin.saveSettings(); }));
-    };
-    const addToggle = (name: string, desc: string, key: keyof VerseFlowSettings) => {
-      new Setting(containerEl)
-        .setName(name)
-        .setDesc(desc)
-        .addToggle((t) => t.setValue(!!(this.plugin.settings as any)[key]).onChange(async (v) => { (this.plugin.settings as any)[key] = v; await this.plugin.saveSettings(); }));
-    };
-    const addNumber = (name: string, desc: string, key: keyof VerseFlowSettings) => {
-      new Setting(containerEl)
-        .setName(name)
-        .setDesc(desc)
-        .addText((t) => t.setValue(String(this.plugin.settings[key] ?? "")).onChange(async (v) => { const n = Number.parseInt(v); (this.plugin.settings as any)[key] = Number.isFinite(n) ? n : (DEFAULT_SETTINGS as any)[key]; await this.plugin.saveSettings(); }));
-    };
-    const addSelect = (name: string, desc: string, key: keyof VerseFlowSettings, opts: Record<string,string>) => {
-      new Setting(containerEl)
-        .setName(name)
-        .setDesc(desc)
-        .addDropdown((d) => {
-          Object.entries(opts).forEach(([v, lbl]) => d.addOption(v, lbl));
-          d.setValue(String(this.plugin.settings[key] ?? (DEFAULT_SETTINGS as any)[key]))
-           .onChange(async (v) => { (this.plugin.settings as any)[key] = v as any; await this.plugin.saveSettings(); });
-        });
-    };
-
-    addText("Plan Path", "Vault-relative path to chronological plan JSON.", "planPath");
-    addText("Progress Path", "Vault-relative path to Bible-Progress.md.", "progressPath");
-    addText("Map Path", "Vault-relative path to bible-read-map.json.", "mapPath");
-    addText("Events Path", "Vault-relative path to Bible-Read-Events.md.", "eventsPath");
-    addToggle("Use Map", "Prefer progress derived from map over frontmatter.", "useMap");
-    addNumber("Max Today", "Upper bound for today's target length.", "maxToday");
-    addNumber("Preview Count", "How many verses to preview after today's list.", "previewCount");
-    addToggle("Include Dashboard Link", "Add a link to Bible-Dashboard at the top of inserted targets.", "includeDashboardLink");
-    addToggle("Run Setup On Enable", "Run one-time setup automatically the first time the plugin is enabled.", "setupOnFirstEnable");
-    addText("Notes Base Path", "Folder to store per-chapter notes (will be created if missing).", "notesBasePath");
-    addText("Notes Suffix", "File name suffix for chapter notes (e.g., _notes.md).", "notesSuffix");
-    addSelect("Notes Link Mode", "How links appear in Today's Target: verse only, chapter-note only, or both.", "notesLinkMode", {
-      verse: "Verse only",
-      chapter: "Chapter note only",
-      dual: "Verse + notes (default)",
+      if (localAdded > 0) {
+        await this.app.vault.modify(f, content);
+        anchorsAdded += localAdded;
+      }
     });
+
+    await Promise.all(tasks);
+    new Notice(`VerseFlow: updated ${Object.keys(targets).length} note(s), added ${anchorsAdded} anchor(s)`);
   }
 }
